@@ -3,7 +3,7 @@ use std::mem;
 use anyhow::{Context, Result, anyhow};
 use tokio::{io::{self, ErrorKind::NotFound}, sync::mpsc};
 use yazi_config::YAZI;
-use yazi_fs::{Cwd, FsHash128, FsUrl, cha::Cha, engine::{Attrs, Engine, FileHolder, local::Local}, ok_or_not_found, path::path_relative_to};
+use yazi_fs::{Cwd, FsHash128, FsUrl, cha::Cha, engine::{Attrs, Capabilities, Engine, FileHolder, local::Local}, ok_or_not_found, path::path_relative_to};
 use yazi_macro::warn;
 use yazi_shared::{path::{PathCow, PathLike}, url::{AsUrl, UrlCow, UrlLike}};
 use yazi_vfs::{Stamp, VfsCha, engine::{self, DirEntry}, maybe_exists, unique_file};
@@ -62,8 +62,7 @@ impl File {
 
 	pub(crate) async fn copy_do(&self, mut task: FileInCopy) -> Result<(), FileOutCopyDo> {
 		ok_or_not_found!(task, Transaction::unlink(&task.to).await);
-		let mut rx =
-			ctx!(task, engine::copy_progressive(&task.from, &task.to, task.cha.unwrap()).await)?;
+		let mut rx = ctx!(task, engine::copy(&task.from, &task.to, task.cha.unwrap()).await)?;
 
 		loop {
 			match rx.recv().await.unwrap_or(Ok(0)) {
@@ -106,7 +105,8 @@ impl File {
 		}
 
 		let (mut links, mut files) = (vec![], vec![]);
-		let reorder = task.follow && ctx!(task, engine::capabilities(&task.from).await)?.symlink;
+		let reorder = task.follow
+			&& ctx!(task, engine::capabilities(&task.from).await)?.contains(Capabilities::SYMLINK);
 
 		super::traverse::<FileOutMove, _, _, _, _, _>(
 			task,
@@ -154,8 +154,7 @@ impl File {
 
 	pub(crate) async fn move_do(&self, mut task: FileInMove) -> Result<(), FileOutMoveDo> {
 		ok_or_not_found!(task, Transaction::unlink(&task.to).await);
-		let mut rx =
-			ctx!(task, engine::copy_progressive(&task.from, &task.to, task.cha.unwrap()).await)?;
+		let mut rx = ctx!(task, engine::copy(&task.from, &task.to, task.cha.unwrap()).await)?;
 
 		loop {
 			match rx.recv().await.unwrap_or(Ok(0)) {
@@ -365,7 +364,7 @@ impl File {
 		let cache = ctx!(task, task.target.cache_entry(), "Cannot determine cache path")?;
 		let cache_tmp = ctx!(task, Transaction::tmp(&cache).await, "Cannot determine download cache")?;
 
-		let mut rx = ctx!(task, engine::copy_progressive(&task.target, &cache_tmp, cha).await)?;
+		let mut rx = ctx!(task, engine::copy(&task.target, &cache_tmp, cha).await)?;
 		loop {
 			match rx.recv().await.unwrap_or(Ok(0)) {
 				Ok(0) => {
@@ -434,7 +433,7 @@ impl File {
 			ctx!(task, Transaction::tmp(&task.target).await, "Cannot determine temporary upload path")?;
 		let mut rx = ctx!(
 			task,
-			engine::copy_progressive(cache, &tmp, Attrs {
+			engine::copy(cache, &tmp, Attrs {
 				mode:  Some(cha.mode),
 				atime: None,
 				btime: None,
